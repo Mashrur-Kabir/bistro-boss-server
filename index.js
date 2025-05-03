@@ -53,17 +53,29 @@ async function run() {
     const verifyToken = (req, res, next) => {
       console.log("inside verify token: ", req.headers.authorization); //Express automatically passes the request object (req) to the middleware function verifyToken, just like it does for any route handler.
       if (!req.headers.authorization) {
-        return res.status(401).send({ message: "Forbidden Access" });
+        return res.status(401).send({ message: "Unauthorized Access" });
       }
       const token = req.headers.authorization.split(" ")[1];
       jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
         if (err) {
-          return res.status(401).send({ message: "Forbidden Access" });
+          return res.status(401).send({ message: "Unauthorized Access" });
         }
-        req.decoded = decoded;
+        req.decoded = decoded; //an email
         next();
       });
     };
+
+    //use verifyAdmin only after verifyToken
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const user = await userCollection.findOne(query);
+      const isAdmin = user?.role === 'admin';
+        if(!isAdmin){
+          return res.status(403).send({ message: "Forbidden Access" });
+        }
+        next();
+    }
 
     //users related api
     //posting users
@@ -80,19 +92,18 @@ async function run() {
     });
 
     //getting users
-    app.get("/users", verifyToken, async (req, res) => {
+    app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
       // this `req` is the SAME request object passed through middleware
       const result = await userCollection.find().toArray();
       res.send(result);
     });
 
-    //isAdmin in Sidebar.jsx
+    //show routes related to isAdmin in Sidebar.jsx.. (in useAdmin hook)
     app.get("/users/admin/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       if (email !== req.decoded.email) {
-        return res.status(403).send({ message: "Unauthorized Access" });
+        return res.status(403).send({ message: "Forbidden Access" });
       }
-
       const query = { email: email };
       const user = await userCollection.findOne(query);
       let admin = false;
@@ -103,7 +114,7 @@ async function run() {
     });
 
     //deleting users
-    app.delete("/users/:id", async (req, res) => {
+    app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await userCollection.deleteOne(query);
@@ -111,7 +122,7 @@ async function run() {
     });
 
     //making a user an admin
-    app.patch("/users/admin/:id", async (req, res) => {
+    app.patch("/users/admin/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const filter = { _id: new ObjectId(id) };
       const updatedDoc = {
@@ -171,15 +182,10 @@ run().catch(console.dir);
 // So the flow becomes:
 
 // 🔐 Firebase logs in the user.
-
 // 🪪 You send their info to your backend (/jwt route).
-
 // 🧾 Backend creates a JWT and sends it back.
-
 // 💾 You store that JWT in localStorage.
-
 // 🚀 All your backend requests include the token in headers.
-
 // ✅ The backend checks the token before sending protected data.
 //Without JWT, your backend has no idea if a request is from a logged-in user or a random person.
 
@@ -187,51 +193,31 @@ run().catch(console.dir);
 // Client side (frontend):
 
 // You use Axios to send a request to the backend, and the config object is modified by the interceptor to include the token in the Authorization header.
-
 // Axios sends this HTTP request to the backend, for example, like this:
-
-// http
-// Copy code
 // GET http://localhost:5000/users
 // Headers:
 //   Authorization: Bearer eyJhbGciOi... (your JWT token)
+
 // Backend (Express):
-
 // The server receives the request, and Express automatically creates a req object for you, which contains all the headers, including the Authorization header.
-
 // Your verifyToken middleware looks at the Authorization header from req.headers:
-
-// js
-// Copy code
 // const token = req.headers.authorization.split(' ')[1];
 // It extracts the token from the Authorization header (Bearer eyJhbGciOi...), so token now contains just the actual JWT (the part after the Bearer keyword).
-
 // Token Verification:
-
 // Then, JWT's verify function checks the token by comparing it with the server's secret key (stored in process.env.ACCESS_TOKEN_SECRET).
-
 // If the token is valid and correctly signed, it will "decode" the token and attach the decoded info to req.decoded.
-
-// js
-// Copy code
-// jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
-//    if (err) {
-//       return res.status(401).send({ message: 'Forbidden Access' });
-//    }
-//    req.decoded = decoded;  // Attach the decoded token (user info) to req
-//    next();  // Proceed to the next middleware or route handler
-// });
-// Result:
-
-// If the token is valid, the request will proceed to the next middleware or route handler.
-
 // If the token is invalid or missing, the server responds with a 401 Unauthorized error.
 
-// 🔄 In short:
-// The frontend sends the token in the Authorization header.
 
-// The backend (Express) looks for it in req.headers.authorization.
+/* verifyAdmin:
+This is used to protect entire routes (like POST /additems or GET /admin/allusers) so only admins can access them at all.
+If the user is not an admin, they get blocked immediately before the route handler even runs.
 
-// The verifyToken middleware checks if the token matches what the server expects by verifying it against the secret key (process.env.ACCESS_TOKEN_SECRET).
+/users/admin/:email API route:
+This is used by your frontend (like useAdmin hook) to check if a user is an admin.
+It's a read-only check used for conditional rendering (e.g. show/hide admin sidebar links).
 
-// If valid, the request is allowed to proceed; if not, an error is thrown.
+THEREFORE:
+Middleware is meant to protect, not to respond with data.
+Middleware can block or allow a request, but it can’t return a useful response (like { admin: true }) for your frontend to use — because that would interrupt the route logic.
+*/
