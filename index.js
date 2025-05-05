@@ -3,7 +3,9 @@ const app = express();
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
 const port = process.env.PORT || 5000;
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 // middleware
 app.use(cors());
@@ -17,7 +19,6 @@ app.listen(port, () => {
   console.log(`Bistro boss is running on port ${port}`);
 });
 
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster1.dwhia.mongodb.net/?appName=Cluster1`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -34,11 +35,11 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
-    //user data
-    const userCollection = client.db("BistroDB").collection("users");
 
+    const userCollection = client.db("BistroDB").collection("users");
     const menuCollection = client.db("BistroDB").collection("menu");
     const cartCollection = client.db("BistroDB").collection("carts");
+    const paymentCollection = client.db("BistroDB").collection("payments");
 
     // jwt related api
     app.post("/jwt", async (req, res) => {
@@ -77,7 +78,7 @@ async function run() {
         next();
     }
 
-    //users related api
+    //USER RELATED APIS----------------------
     //posting users
     app.post("/users", async (req, res) => {
       const user = req.body;
@@ -113,7 +114,7 @@ async function run() {
       res.send({ admin });
     });
 
-    //deleting users
+    //deleting users (vT & vA to secure backend, adminRoute to secure frontend)
     app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
@@ -134,13 +135,56 @@ async function run() {
       res.send(result);
     });
 
-    //getting data from menuCollection
+    //MENU REALTED APIS
+    //getting data from menuCollection----------------------
     app.get("/menu", async (req, res) => {
       const result = await menuCollection.find().toArray();
       res.send(result);
     });
 
-    //posting cart info on cartCollection
+    //posting data to menuCollection
+    app.post('/menu', verifyToken, verifyAdmin, async(req, res) =>{
+      const menuItem = req.body;
+      const result = await menuCollection.insertOne(menuItem);
+      res.send(result);
+    })
+
+    //deleting a specific menu from menuCollection
+    app.delete("/menu/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await menuCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    //getting a specific menu item for update
+    app.get('/menu/:id', verifyToken, verifyAdmin, async(req, res) => {
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)}
+      const result = await menuCollection.findOne(query);
+      res.send(result);
+    })
+
+    //updating that specific item 
+    app.patch('/menu/:id', verifyToken, verifyAdmin, async(req, res) => {
+      const item = req.body;
+      const id = req.params.id;
+      const filter = {_id: new ObjectId(id)};
+      const updatedDoc = {
+        $set: {
+          name: item.name,
+          recipe: item.recipe,
+          image: item.image,
+          category: item.category,
+          price: item.price,
+        }
+      }
+      const result = await menuCollection.updateOne(filter, updatedDoc);
+      res.send(result);
+    })
+
+    //CART RELATED APIS
+    //posting cart info on cartCollection----------------------
     app.post("/carts", async (req, res) => {
       const cartItem = req.body;
       const result = await cartCollection.insertOne(cartItem);
@@ -156,12 +200,46 @@ async function run() {
     });
 
     //deleting a specific cart from cartCollection
-    app.delete("/carts/:id", async (req, res) => {
+    app.delete("/carts/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await cartCollection.deleteOne(query);
       res.send(result);
     });
+
+    //PAYMENT RELATED APIS
+    // payment intent----------------------
+    app.post('/create-payment-intent', async(req, res) => {
+      const {price} = req.body;
+      const amount = parseInt(price * 100);
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: "usd",
+        payment_method_types: ['card']
+      });
+
+      res.send({
+        clientSecret: paymentIntent.client_secret
+      })
+    })
+
+    // posting payment info
+    app.post('/payments', async(req, res) => {
+      const payment = req.body;
+      const paymentResult = await paymentCollection.insertOne(payment);
+
+      //now, delete each item from the cart
+      // Convert each string ID to a MongoDB ObjectId. Coercing every incoming id to a string, so TypeScript picks the supported overload.
+      const cartObjectIds = payment.cartIds.map(id =>
+        new ObjectId(String(id)) //Even if your cartIds are strings at runtime, TypeScript can't know that unless you explicitly tell it. Without type annotations, TS guesses and might assume: (id: any) => new ObjectId(id) <-- hmm... what if this is a number?
+      );
+      const query = {
+        _id: { $in: cartObjectIds } //This says: “Find all cart documents whose _id is in that array of ObjectIds.”
+      };
+      const deleteResult = await cartCollection.deleteMany(query);
+      res.send({paymentResult, deleteResult});
+    })
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
@@ -221,3 +299,5 @@ THEREFORE:
 Middleware is meant to protect, not to respond with data.
 Middleware can block or allow a request, but it can’t return a useful response (like { admin: true }) for your frontend to use — because that would interrupt the route logic.
 */
+
+// (vT & vA to secure backend, adminRoute and privateRoute to secure frontend)
