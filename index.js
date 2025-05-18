@@ -3,12 +3,18 @@ const app = express();
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 // middleware
-app.use(cors());
+const corsOptions = {
+  origin: "http://localhost:5173", // <-- your React app URL
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true, // <-- if you ever need cookies
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 
 app.get("/", (req, res) => {
@@ -35,7 +41,6 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
-
     const userCollection = client.db("BistroDB").collection("users");
     const menuCollection = client.db("BistroDB").collection("menu");
     const cartCollection = client.db("BistroDB").collection("carts");
@@ -52,9 +57,11 @@ async function run() {
 
     //middlewares
     const verifyToken = (req, res, next) => {
-      console.log("inside verify token: ", req.headers.authorization); //Express automatically passes the request object (req) to the middleware function verifyToken, just like it does for any route handler.
-      if (!req.headers.authorization) {
-        return res.status(401).send({ message: "Unauthorized Access" });
+      // console.log("inside verify token: ", req.headers.authorization); //Express automatically passes the request object (req) to the middleware function verifyToken, just like it does for any route handler.
+      // console.log(req.body);
+      console.log(">>> incoming Authorization header:" ,req.get("Authorization"))
+      if (!req.get("Authorization")) {
+        return res.status(401).send({ message: "Forbidden Access..." });
       }
       const token = req.headers.authorization.split(" ")[1];
       jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
@@ -69,16 +76,17 @@ async function run() {
     //use verifyAdmin only after verifyToken
     const verifyAdmin = async (req, res, next) => {
       const email = req.decoded.email;
+      console.log(email);
       const query = { email: email };
       const user = await userCollection.findOne(query);
-      const isAdmin = user?.role === 'admin';
-        if(!isAdmin){
-          return res.status(403).send({ message: "Forbidden Access" });
-        }
-        next();
-    }
+      const isAdmin = user?.role === "admin";
+      if (!isAdmin) {
+        return res.status(403).send({ message: "Forbidden Access" });
+      }
+      next();
+    };
 
-    //USER RELATED APIS----------------------
+    //USER RELATED APIS--------------------------------------------
     //posting users
     app.post("/users", async (req, res) => {
       const user = req.body;
@@ -123,31 +131,36 @@ async function run() {
     });
 
     //making a user an admin
-    app.patch("/users/admin/:id", verifyToken, verifyAdmin, async (req, res) => {
-      const id = req.params.id;
-      const filter = { _id: new ObjectId(id) };
-      const updatedDoc = {
-        $set: {
-          role: "admin", //we want create a role field with 'admin' as its value on the db
-        },
-      };
-      const result = await userCollection.updateOne(filter, updatedDoc);
-      res.send(result);
-    });
+    app.patch(
+      "/users/admin/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: {
+            role: "admin", //we want create a role field with 'admin' as its value on the db
+          },
+        };
+        const result = await userCollection.updateOne(filter, updatedDoc);
+        res.send(result);
+      }
+    );
 
     //MENU REALTED APIS
-    //getting data from menuCollection----------------------
+    //getting data from menuCollection--------------------------------------------
     app.get("/menu", async (req, res) => {
       const result = await menuCollection.find().toArray();
       res.send(result);
     });
 
     //posting data to menuCollection
-    app.post('/menu', verifyToken, verifyAdmin, async(req, res) =>{
+    app.post("/menu", verifyToken, verifyAdmin, async (req, res) => {
       const menuItem = req.body;
       const result = await menuCollection.insertOne(menuItem);
       res.send(result);
-    })
+    });
 
     //deleting a specific menu from menuCollection
     app.delete("/menu/:id", verifyToken, verifyAdmin, async (req, res) => {
@@ -157,19 +170,19 @@ async function run() {
       res.send(result);
     });
 
-    //getting a specific menu item for update
-    app.get('/menu/:id', verifyToken, verifyAdmin, async(req, res) => {
+    //getting a specific menu item (for update)
+    app.get("/menu/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
-      const query = {_id: new ObjectId(id)}
+      const query = { _id: new ObjectId(id) };
       const result = await menuCollection.findOne(query);
       res.send(result);
-    })
+    });
 
-    //updating that specific item 
-    app.patch('/menu/:id', verifyToken, verifyAdmin, async(req, res) => {
+    //updating that specific item
+    app.patch("/menu/:id", verifyToken, verifyAdmin, async (req, res) => {
       const item = req.body;
       const id = req.params.id;
-      const filter = {_id: new ObjectId(id)};
+      const filter = { _id: new ObjectId(id) };
       const updatedDoc = {
         $set: {
           name: item.name,
@@ -177,14 +190,14 @@ async function run() {
           image: item.image,
           category: item.category,
           price: item.price,
-        }
-      }
+        },
+      };
       const result = await menuCollection.updateOne(filter, updatedDoc);
       res.send(result);
-    })
+    });
 
     //CART RELATED APIS
-    //posting cart info on cartCollection----------------------
+    //posting cart info on cartCollection--------------------------------------------
     app.post("/carts", async (req, res) => {
       const cartItem = req.body;
       const result = await cartCollection.insertOne(cartItem);
@@ -208,38 +221,137 @@ async function run() {
     });
 
     //PAYMENT RELATED APIS
-    // payment intent----------------------
-    app.post('/create-payment-intent', async(req, res) => {
-      const {price} = req.body;
+    // payment intent--------------------------------------------
+    app.post("/create-payment-intent", async (req, res) => {
+      const { price } = req.body;
       const amount = parseInt(price * 100);
 
       const paymentIntent = await stripe.paymentIntents.create({
         amount: amount,
         currency: "usd",
-        payment_method_types: ['card']
+        payment_method_types: ["card"],
       });
 
       res.send({
-        clientSecret: paymentIntent.client_secret
-      })
-    })
+        clientSecret: paymentIntent.client_secret,
+      });
+    });
 
     // posting payment info
-    app.post('/payments', async(req, res) => {
+    app.post("/payments", async (req, res) => {
       const payment = req.body;
       const paymentResult = await paymentCollection.insertOne(payment);
 
       //now, delete each item from the cart
       // Convert each string ID to a MongoDB ObjectId. Coercing every incoming id to a string, so TypeScript picks the supported overload.
-      const cartObjectIds = payment.cartIds.map(id =>
-        new ObjectId(String(id)) //Even if your cartIds are strings at runtime, TypeScript can't know that unless you explicitly tell it. Without type annotations, TS guesses and might assume: (id: any) => new ObjectId(id) <-- hmm... what if this is a number?
+      const cartObjectIds = payment.cartIds.map(
+        (id) => new ObjectId(String(id)) //Even if your cartIds are strings at runtime, TypeScript can't know that unless you explicitly tell it. Without type annotations, TS guesses and might assume: (id: any) => new ObjectId(id) <-- hmm... what if this is a number?
       );
       const query = {
-        _id: { $in: cartObjectIds } //This says: “Find all cart documents whose _id is in that array of ObjectIds.”
+        _id: { $in: cartObjectIds }, //This says: “Find all cart documents whose _id is in that array of ObjectIds.”
       };
       const deleteResult = await cartCollection.deleteMany(query);
-      res.send({paymentResult, deleteResult});
-    })
+      res.send({ paymentResult, deleteResult });
+    });
+
+    //getting payment info
+    app.get("/payments/:email", verifyToken, async (req, res) => {
+      const query = { email: req.params.email };
+      if (req.params.email !== req.decoded.email) {
+        return res.status(403).send({ message: "Forbidden Access" });
+      }
+      const result = await paymentCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // update payment status to 'received'
+    app.patch("/payments/:id", verifyToken, async (req, res) => {
+      const id = req.params.id;
+      const { status } = req.body;
+      const filter = { _id: new ObjectId(id) };
+      const updateDoc = {
+        $set: { status: status },
+      };
+      try {
+        const result = await paymentCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      } catch (error) {
+        console.error("Failed to update payment status:", error);
+        res.status(500).send({ message: "Failed to update payment status" });
+      }
+    });
+
+    //DASHBOARD APIS
+    //overview statistics for admin dashboard (four cards on top)--------------------------------------------
+    app.get("/admin-stats", verifyToken, verifyAdmin, async (req, res) => {
+      const users = await userCollection.estimatedDocumentCount();
+      const menuItems = await menuCollection.estimatedDocumentCount();
+      const orders = await paymentCollection.estimatedDocumentCount();
+
+      const result = await paymentCollection
+        .aggregate([
+          {
+            $group: {
+              _id: null,
+              totalRevenue: { $sum: "$price" },
+            },
+          },
+        ])
+        .toArray();
+      const revenue = result[0]?.totalRevenue || 0;
+
+      res.send({
+        users,
+        menuItems,
+        orders,
+        revenue,
+      });
+    });
+
+    //charts. using aggregate pipeline to show amount of sales for each category and percentage of sales in a pie chart
+    app.get("/order-stats", verifyToken, verifyAdmin, async (req, res) => {
+      console.log(req.body);
+      const result = await paymentCollection
+        .aggregate([
+          {
+            $unwind: "$menuItemIds",
+          },
+          {
+            $addFields: {
+              menuItemIdObj: { $toObjectId: "$menuItemIds" }, //you need to convert menuItemIds so MongoDB can successfully compare them during the $lookup. The value itself (e.g. "67fbf2784f321252599837fa", which is a string)
+            },
+          },
+          {
+            $lookup: {
+              from: "menu",
+              localField: "menuItemIdObj",
+              foreignField: "_id",
+              as: "menuItems", //This joins each document with the matching menu item from the menu collection.
+            },
+          },
+          {
+            $unwind: "$menuItems", //inside menuItems there's an array of objects (one object to be precise). so we unwind it so the next step-- $menuItems.category works
+          },
+          {
+            $group: {
+              _id: "$menuItems.category", //_id is the default key MongoDB uses for grouping results.
+              quantity: { $sum: 1 },
+              revenue: { $sum: "$menuItems.price" }, //group the sales by category (like "drinks", "dessert", etc.) and calculate how many items sold and how much was earned from each category
+            },
+          },
+          {
+            $project: {
+              _id: 0, //hide original id field
+              category: "$_id", //rename id to category
+              quantity: 1, //keep the quantity field
+              revenue: 1, //keep the revenue field
+            },
+          },
+        ])
+        .toArray();
+
+      res.send(result);
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
@@ -285,7 +397,6 @@ run().catch(console.dir);
 // Then, JWT's verify function checks the token by comparing it with the server's secret key (stored in process.env.ACCESS_TOKEN_SECRET).
 // If the token is valid and correctly signed, it will "decode" the token and attach the decoded info to req.decoded.
 // If the token is invalid or missing, the server responds with a 401 Unauthorized error.
-
 
 /* verifyAdmin:
 This is used to protect entire routes (like POST /additems or GET /admin/allusers) so only admins can access them at all.
